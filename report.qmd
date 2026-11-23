@@ -1,0 +1,384 @@
+---
+title: "Лабораторна робота №3. Основи регресійного моделювання"
+subtitle: "Прогноз економності автомобілів (Auto MPG)"
+author: "Табачук Олександр Ігорович, група КН-42"
+date: 2026-11-24
+date-format: "DD.MM.YYYY"
+bibliography: references.bib
+format:
+  html:
+    toc: true
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Код"
+    embed-resources: true
+    html-math-method: mathml
+execute:
+  warning: false
+---
+
+```{python}
+#| label: setup
+import json, platform, sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "src"))
+import matplotlib, matplotlib.pyplot as plt
+import numpy as np, pandas as pd, scipy, sklearn, statsmodels
+import statsmodels.formula.api as smf
+from IPython.display import Markdown
+from scipy import stats
+from sklearn.base import clone
+from statsmodels.nonparametric.smoothers_lowess import lowess
+from statsmodels.stats.diagnostic import het_breuschpagan
+from lab3 import SEED, load_data, split, make_models, metrics, cross_validate
+
+FIG, TAB = Path("outputs/figures"), Path("outputs/tables")
+for p in (FIG, TAB): p.mkdir(parents=True, exist_ok=True)
+plt.rcParams.update({"figure.dpi": 110, "savefig.dpi": 150, "axes.grid": True,
+                     "grid.alpha": .3, "axes.spines.top": False, "axes.spines.right": False})
+COL = {"США": "#4C72B0", "Європа": "#55A868", "Японія": "#C44E52"}
+
+def save(fig, name):
+    fig.tight_layout(); fig.savefig(FIG / f"{name}.png", bbox_inches="tight"); plt.show()
+
+def uk(x, d=2):
+    return f"{x:.{d}f}".replace("-", "−").replace(".", ",")
+
+def ci(lo, hi, d=2):
+    return f"[{uk(lo, d)}; {uk(hi, d)}]"
+
+def pf(p):
+    return "p < 0,001" if p < .001 else f"p = {uk(p, 3)}"
+
+def md(df, d=2):
+    return Markdown(df.map(lambda v: uk(v, d) if isinstance(v, float) else v).to_markdown(index=False, disable_numparse=True))
+```
+
+# Вступ: питання, література та гіпотези
+
+**Предметна область.** Економність пального легкових автомобілів ринку США 1970–1982 модельних років. **Одиниця спостереження** — модель автомобіля певного модельного року. **Ціль** — `mpg`, пробіг у милях на галон США (неперервна; більше означає економніше; л/100 км = 235,215 / mpg).
+
+**Дослідницьке питання.** Наскільки точно можна спрогнозувати `mpg` моделі, якої немає в навчальних даних, за її масою, потужністю, модельним роком і регіоном виробника, та які зв'язки з `mpg` підтримують дані?
+
+Прогноз потрібен для **інших моделей того самого ринку й періоду**. Роки після 1982 не прогнозуємо.
+
+## Література
+
+| Джерело | Що встановлено | Що взято для цієї роботи |
+|---|---|---|
+| Knittel [-@knittel2011] | Оцінює технологічний прогрес і компроміс між економністю, масою та потужністю. За незмінних маси, потужності й крутного моменту на рівні 1980 р. економність до 2006 р. могла зрости майже на 60 % | Маса й потужність входять до моделі разом. Рік — наближення технологічного прогресу, очікуваний знак «+» |
+| Reynolds і Kandlikar [-@reynolds2007] | Для звичайних авто на ринку США 2007 р. +100 кг маси пов'язані з +0,7 л/100 км | Очікуваний знак маси для `mpg` — «−». Якщо витрата (л/100 км) зростає з масою приблизно лінійно, то обернена величина `mpg` залежить від маси нелінійно |
+| EPA [-@epa2026] | З 1975 до початку 1980-х економність швидко зростала, а маса й потужність падали; ці характеристики не є незалежними | Межа інтерпретації: рік, маса й потужність змінювалися одночасно, тому коефіцієнти — умовні асоціації, а не ефекти втручання |
+
+: Зіставлення предметних джерел {tbl-colwidths="[18,42,40]"}
+
+**Синтез.** Джерела узгоджені щодо знаку: важчі й потужніші авто менш економні. Акцент відрізняється: Reynolds і Kandlikar порівнюють авто одного року, тобто бачать зв'язок із конструкцією, а Knittel та EPA розглядають зміни в часі, коли прогрес частково маскується або підсилюється зміною маси й потужності. Тому рік, маса й потужність мають входити в одну модель. Сам набір для прогнозування використав, зокрема, Quinlan [-@quinlan1993].
+
+## Гіпотези
+
+Записані до оцінювання моделей. Обидві **підказані також EDA з лабораторної №2** на тому самому наборі, тому їхні результати подано як **розвідувальні**.
+
+- **H1 (маса).** За однакових потужності, року й регіону більша маса пов'язана з меншим `mpg`. *Перевірка:* знак, величина й 95 % ДІ коефіцієнта маси в лінійній моделі M1; очікуємо, що ДІ цілком нижчий за 0.
+- **H2 (рік).** За однакових маси, потужності й регіону новіші авто економніші. *Перевірка:* 95 % ДІ коефіцієнта року в M1; очікуємо, що ДІ цілком вищий за 0.
+
+# Методи: дані, EDA та план перевірки
+
+## Дані та поділ
+
+```{python}
+#| label: data
+df = load_data()
+train, test = split(df)
+assert not set(train.model_id) & set(test.model_id)
+```
+
+Auto MPG [@autompg], UCI Machine Learning Repository, ліцензія CC BY 4.0. Файл `auto-mpg.data` отримано для лабораторної №2 в листопаді 2026 р. і збережено в репозиторії без змін. Обсяг: `{python} len(df)` спостережень, `{python} df.model_id.nunique()` унікальних назв моделей, пропущено `{python} int(df.horsepower.isna().sum())` значень `horsepower`. Обмеження: лише ринок США, без обсягів продажу, типу пального й трансмісії; регіони незбалансовані.
+
+**Поділ.** Деякі моделі повторюються в різні роки (наприклад, *ford pinto*), тому рядки не цілком незалежні. Поділ приблизно 80/20 виконано **за назвою моделі** (описки в назвах марок виправлено), `seed = 42`: навчальна частина — `{python} len(train)` спостережень, тестова — `{python} len(test)`. Жодна назва не потрапила в обидві частини.
+
+**Обмеження незалежності тесту.** EDA в лабораторній №2 виконано на *всіх* 398 спостереженнях. Вона вже підказала набір предикторів (маса, потужність, рік, регіон без дубльованих розмірних ознак), логарифмування цілі та перевірку нелінійності. Тому тестова оцінка може бути дещо оптимістичною. Нових даних немає; EDA нижче виконано лише на навчальній частині.
+
+## Висновки EDA
+
+З лабораторної №2: `mpg` має правосторонню асиметрію; єдиний викид за IQR (Mazda GLC, 46,6 mpg) реальний і залишений; маса має найсильніший зв'язок із ціллю (ρ ≈ −0,88); маса, об'єм, потужність і циліндри мультиколінеарні (VIF до 20); регіональна різниця переважно пояснюється масою.
+
+```{python}
+#| label: fig-eda1
+#| fig-cap: "Розподіл цілі на навчальній частині: у вихідній шкалі та після логарифмування"
+fig, ax = plt.subplots(1, 2, figsize=(9, 3.2))
+ax[0].hist(train.mpg, bins=22, color="#4C72B0", edgecolor="white")
+ax[0].set(xlabel="mpg, миль/галон", ylabel="Кількість авто", title=f"mpg (асиметрія {uk(stats.skew(train.mpg))})")
+ax[1].hist(np.log(train.mpg), bins=22, color="#55A868", edgecolor="white")
+ax[1].set(xlabel="ln(mpg)", title=f"ln mpg (асиметрія {uk(stats.skew(np.log(train.mpg)))})")
+save(fig, "eda_target")
+```
+
+**Рішення:** перевірити модифікацію з ln(mpg), де розподіл симетричніший.
+
+```{python}
+#| label: fig-eda2
+#| fig-cap: "Маса й mpg за регіоном (навчальна частина); чорна лінія — LOWESS"
+fig, ax = plt.subplots(figsize=(7.5, 4))
+for o, g in train.groupby("origin"):
+    ax.scatter(g.w100 * 100, g.mpg, s=20, alpha=.6, color=COL[o], label=o)
+lw = lowess(train.mpg, train.w100 * 100, frac=.5); ax.plot(*lw.T, "k", lw=2)
+ax.set(xlabel="Маса, кг", ylabel="mpg, миль/галон"); ax.legend(title="Регіон")
+save(fig, "eda_weight")
+```
+
+**Рішення:** маса входить у модель; крива опукла, тож лінійного члена може бракувати. Перевіряємо квадрат маси та логарифмічну форму. Регіон додаємо як категорію.
+
+```{python}
+#| label: fig-eda3
+#| fig-cap: "mpg за модельним роком для терцилів маси (навчальна частина, середні)"
+fig, ax = plt.subplots(figsize=(7.5, 3.8))
+wg = pd.qcut(train.w100, 3, labels=["легкі", "середні", "важкі"])
+for (n, g), c in zip(train.groupby(wg, observed=True), ["#55A868", "#DD8452", "#4C72B0"]):
+    s = g.groupby("model_year").mpg.mean(); ax.plot(1900 + s.index, s, "o-", color=c, label=n)
+ax.set(xlabel="Модельний рік", ylabel="Середнє mpg, миль/галон"); ax.legend(title="Маса")
+save(fig, "eda_year")
+```
+
+**Рішення:** рік потрібен і за подібної маси. Темп зростання в групах може відрізнятися, тому перевіряємо взаємодію маса × рік.
+
+## План оцінювання (зафіксовано до відкриття тесту)
+
+- **Валідація:** на навчальній частині, 5-кратна групова CV за назвою моделі, 10 повторів (50 розбиттів, однакових для всіх моделей).
+- **Захист від витоку:** медіанна імпутація потужності, масштабування (ridge) і поправка Дуана оцінюються лише на навчальній частині кожного розбиття. Параметр ridge підбирається всередині неї (узагальнена CV, без урахування груп).
+- **Доступність предикторів:** маса, потужність, рік, регіон, об'єм, циліндри й розгін є технічними характеристиками, відомими незалежно від вимірювання витрати. Похідна л/100 км до предикторів не входить.
+- **Основна метрика — RMSE** у mpg: великі промахи для вибору авто шкідливіші за кілька малих, а середнє (константний орієнтир) мінімізує саме квадратичну похибку. MAE подаємо додатково.
+- **Правило вибору:** найменший середній CV-RMSE. Якщо простіша модель поступається менш ніж на 1 %, обираємо простішу.
+- **Тест** відкривається один раз для обраної моделі та константи.
+
+# Результати: моделі, діагностика та порівняння
+
+## Орієнтир і базова регресія
+
+M0 прогнозує середнє `mpg` навчальної частини: `{python} uk(train.mpg.mean())` mpg.
+
+$$\text{M1: } mpg = \beta_0 + \beta_1\,\frac{\text{маса}}{100\,\text{кг}} + \beta_2\,\frac{\text{к. с.}}{10} + \beta_3(\text{рік}-1976) + \beta_4\,[\text{Європа}] + \beta_5\,[\text{Японія}] + \varepsilon$$
+
+Маса й потужність відображають дві сторони компромісу з літератури; об'єм і циліндри не додано через мультиколінеарність. Базовий регіон — США. ДІ ґрунтуються на кластерно-стійких похибках за назвою моделі.
+
+```{python}
+#| label: tbl-coef
+#| tbl-cap: "M1: оцінки на навчальній частині"
+T = train.copy(); T["hp10"] = T["hp10"].fillna(T["hp10"].median())
+T["lw"], T["lhp"], T["lmpg"] = np.log(T.w100), np.log(T.hp10), np.log(T.mpg)
+T["pid"] = pd.factorize(T.model_id)[0]
+def ols(f, d=T):
+    return smf.ols(f, d).fit(cov_type="cluster", cov_kwds={"groups": d["pid"]}, use_t=True)
+O = 'C(origin, Treatment("США"))'
+EU, JP = f"{O}[T.Європа]", f"{O}[T.Японія]"
+F1, F2 = f"mpg ~ w100 + hp10 + yr + {O}", f"lmpg ~ lw + lhp + yr + {O}"
+m1 = ols(F1)
+NAMES = {"Intercept": "Константа", "w100": "Маса, +100 кг", "hp10": "Потужність, +10 к. с.", "yr": "Рік, +1",
+         EU: "Європа проти США", JP: "Японія проти США", "lw": "ln маси", "lhp": "ln потужності"}
+def coef(m):
+    c = m.conf_int()
+    return pd.DataFrame({"Член": [NAMES[i] for i in m.params.index], "Оцінка": m.params.values,
+                         "95 % ДІ, від": c[0].values, "95 % ДІ, до": c[1].values})
+c1 = coef(m1); c1.to_csv(TAB / "coef_M1.csv", index=False)
+b, k = m1.params, m1.conf_int()
+md(c1)
+```
+
+**Інтерпретація (за інших предикторів моделі незмінних).** Авто, важче на 100 кг, має в середньому на `{python} uk(-b.w100)` mpg менше (95 % ДІ коефіцієнта `{python} ci(*k.loc['w100'])`). Кожен новіший модельний рік пов'язаний із +`{python} uk(b.yr)` mpg (`{python} ci(*k.loc['yr'])`). Для потужності оцінка `{python} uk(b.hp10)` mpg на 10 к. с., ДІ `{python} ci(*k.loc['hp10'])` містить 0: окремий внесок потужності понад масу ця модель не визначає. Європейські та японські авто мають приблизно на `{python} uk(b[EU],1)` і `{python} uk(b[JP],1)` mpg більше, ніж американські тієї самої маси, потужності й року. R² = `{python} uk(m1.rsquared)`.
+
+## Діагностика M1
+
+```{python}
+#| label: fig-diag
+#| fig-cap: "Залишки M1 проти прогнозів (LOWESS) і впливові спостереження"
+cook = smf.ols(F1, T).fit().get_influence().cooks_distance[0]; cut = 4 / len(T)
+fig, ax = plt.subplots(1, 2, figsize=(10, 3.8))
+ax[0].scatter(m1.fittedvalues, m1.resid, s=16, alpha=.6); ax[0].axhline(0, color="grey")
+ax[0].plot(*lowess(m1.resid, m1.fittedvalues, frac=.5).T, "r", lw=2)
+ax[0].set(xlabel="Прогноз, mpg", ylabel="Залишок, mpg", title="M1: вигин і «віяло»")
+ax[1].stem(np.arange(len(T)), cook, markerfmt=" ", basefmt=" "); ax[1].axhline(cut, color="r", ls="--")
+ax[1].set(xlabel="Номер спостереження", ylabel="Відстань Кука", title="Впливові спостереження (поріг 4/n)")
+save(fig, "diag_M1")
+def thirds(m):
+    f = m.fittedvalues
+    return m.resid[f < f.quantile(1/3)].std(), m.resid[f > f.quantile(2/3)].std()
+sd_lo, sd_hi = thirds(m1)
+bp1 = het_breuschpagan(m1.resid, m1.model.exog)[1]
+keep = cook <= cut
+m1s = ols(F1, T[keep].copy())
+top = T.assign(cook=cook, resid=m1.resid).nlargest(5, "cook")[["car_name", "model_year", "mpg", "resid", "cook"]]
+```
+
+```{python}
+#| label: tbl-cook
+#| tbl-cap: "П'ять найвпливовіших спостережень M1"
+md(top.rename(columns={"car_name": "Авто", "model_year": "Рік (19xx)", "resid": "Залишок", "cook": "Кук"}), 3)
+```
+
+- **Нелінійність.** LOWESS вигнутий: на краях діапазону прогнозів залишки здебільшого додатні, всередині від'ємні. M1 систематично занижує `mpg` на краях; один нахил маси усереднює різні нахили.
+- **Неоднаковий розкид.** SD залишків зростає від `{python} uk(sd_lo)` (нижня третина прогнозів) до `{python} uk(sd_hi)` mpg (верхня); тест Бройша–Пагана: `{python} pf(bp1)`. Звичайні стандартні похибки ненадійні, тому використано стійкі; похибка прогнозу для економних авто більша за середню.
+- **Впливові спостереження.** Поріг 4/n перевищують `{python} int((~keep).sum())` точок. Це реальні авто, тому їх не вилучено. Без них коефіцієнт маси `{python} uk(m1s.params.w100)`, року `{python} uk(m1s.params.yr)` mpg: знаки та висновки щодо H1–H2 не змінюються.
+
+## Спроби покращення
+
+| Модифікація | Яку проблему має розв'язати |
+|---|---|
+| M2a: + (маса − 1300 кг)² | вигин залишків |
+| M2b: M2a + маса × рік | різний темп змін для легких і важких |
+| M2c: ln mpg ~ ln маси + ln потужності + рік + регіон | вигин **і** неоднаковий розкид; коефіцієнти маси й потужності — еластичності |
+| M2d: ridge, додано об'єм, циліндри, розгін | мультиколінеарність розмірних ознак |
+| M3 (додаткова): випадковий ліс, усі ознаки | довільна нелінійність і взаємодії |
+
+Прогноз M2c переводимо в mpg через експоненту з поправкою Дуана, щоб оцінювати середнє `mpg`, а не медіану.
+
+```{python}
+#| label: tbl-cv
+#| tbl-cap: "Перехресна валідація на навчальній частині: середнє ± SD за 50 однаковими розбиттями, mpg"
+models = make_models()
+res = cross_validate(train, models)
+res.to_csv(TAB / "cv_folds.csv", index=False)
+S = res.groupby("model", sort=False)[["RMSE", "MAE"]].agg(["mean", "std"])
+P = res.pivot_table(index=["repeat", "fold"], columns="model", values="RMSE")[list(models)]
+B, L = "M2c log-log", "M1 лінійна"
+assert S[("RMSE", "mean")].idxmin() == B
+R = S[("RMSE", "mean")]
+tab = pd.DataFrame({"Модель": S.index,
+  "RMSE": [f"{uk(a)} ± {uk(c)}" for a, c in S["RMSE"].values],
+  "MAE": [f"{uk(a)} ± {uk(c)}" for a, c in S["MAE"].values],
+  "Зміна RMSE до M1": [uk(100 * (a / R[L] - 1), 1) + " %" for a in R],
+  "Краща за M1, розбиттів": [f"{int((P[n] < P[L]).sum())}/50" if n != L else "—" for n in S.index]})
+tab.to_csv(TAB / "cv_summary.csv", index=False)
+d31 = P["M3 випадковий ліс"] - P[B]
+md(tab)
+```
+
+```{python}
+#| label: fig-cv
+#| fig-cap: "RMSE за 50 розбиттями (без константи)"
+fig, ax = plt.subplots(figsize=(8, 3.5))
+n = [m for m in P.columns if m != "M0 константа"]
+ax.boxplot([P[m] for m in n], orientation="horizontal", tick_labels=n); ax.invert_yaxis()
+ax.set(xlabel="RMSE, mpg"); save(fig, "cv_box")
+```
+
+Розбиття повторної CV перекриваються, тому SD описує розкид, але 50 значень не є незалежними.
+
+**Що показала валідація.** Виправлення нелінійності допомагає: M2a і M2b кращі за M1. Найбільше дає M2c: RMSE `{python} uk(R[B])` проти `{python} uk(R[L])` mpg. Ridge практично не відрізняється від M1, бо проблема M1 — форма зв'язку, а не мультиколінеарність. Випадковий ліс не перевершив M2c (RMSE в середньому більший на `{python} uk(d31.mean())` mpg; M2c краща у `{python} int((d31>0).sum())` із 50 розбиттів, тобто перевага невелика), а коефіцієнтів для інтерпретації не дає.
+
+**Вибір зафіксовано: M2c** — мінімальний CV-RMSE; M1, M2a, M2b поступаються більш ніж на 1 %.
+
+```{python}
+#| label: tbl-coef2
+#| tbl-cap: "M2c: оцінки на навчальній частині (ціль — ln mpg)"
+m2 = ols(F2)
+c2 = coef(m2); c2.to_csv(TAB / "coef_M2c.csv", index=False)
+g, h = m2.params, m2.conf_int()
+bp2 = het_breuschpagan(m2.resid, m2.model.exog)[1]
+sl, sh = thirds(m2)
+pct = lambda x: 100 * (np.exp(x) - 1)
+md(c2, 3)
+```
+
+Маса, більша на 1 %, пов'язана зі зміною `mpg` приблизно на `{python} uk(g.lw)` % (ДІ еластичності `{python} ci(*h.loc['lw'])`); потужність, більша на 1 %, — на `{python} uk(g.lhp)` % (`{python} ci(*h.loc['lhp'])`). Новіший на рік автомобіль економніший на `{python} uk(pct(g.yr),1)` % (`{python} ci(pct(h.loc['yr',0]), pct(h.loc['yr',1]), 1)`).
+
+```{python}
+#| label: fig-diag2
+#| fig-cap: "Залишки M2c (логарифмічна шкала) проти прогнозів"
+fig, ax = plt.subplots(figsize=(6.5, 3.4))
+ax.scatter(m2.fittedvalues, m2.resid, s=16, alpha=.6); ax.axhline(0, color="grey")
+ax.plot(*lowess(m2.resid, m2.fittedvalues, frac=.5).T, "r", lw=2)
+ax.set(xlabel="Прогноз ln(mpg)", ylabel="Залишок ln(mpg)"); save(fig, "diag_M2c")
+```
+
+SD залишків у нижній і верхній третинах прогнозів: `{python} uk(sl,3)` і `{python} uk(sh,3)` (відношення `{python} uk(sh/sl)`; у M1 було `{python} uk(sd_hi/sd_lo)`). Тест Бройша–Пагана: `{python} pf(bp2)`.
+
+## Фінальна оцінка на тесті
+
+M2c перенавчено на всій навчальній частині й один раз оцінено разом із константою.
+
+```{python}
+#| label: tbl-test
+#| tbl-cap: "Тестова оцінка (mpg); 95 % ДІ — бутстреп за назвами моделей, 2000 повторів"
+pred = {n: clone(models[n]).fit(train, train.mpg).predict(test) for n in ["M0 константа", B]}
+rng = np.random.default_rng(SEED)
+groups = list(test.groupby("model_id").indices.values())
+boots = [np.concatenate([groups[i] for i in rng.integers(0, len(groups), len(groups))]) for _ in range(2000)]
+rows, TM, BS = [], {}, {}
+y = test.mpg.to_numpy()
+for nme, p in pred.items():
+    TM[nme] = M = metrics(y, p)
+    BS[nme] = bs = pd.DataFrame([metrics(y[i], p[i]) for i in boots]).quantile([.025, .975])
+    rows.append({"Модель": nme, "RMSE": M["RMSE"], "RMSE, 95 % ДІ": ci(*bs.RMSE), "MAE": M["MAE"], "MAE, 95 % ДІ": ci(*bs.MAE)})
+tt = pd.DataFrame(rows); tt.to_csv(TAB / "test_metrics.csv", index=False)
+gain = 100 * (1 - TM[B]["RMSE"] / TM["M0 константа"]["RMSE"])
+md(tt)
+```
+
+```{python}
+#| label: fig-test
+#| fig-cap: "Тест: фактичні й прогнозовані значення M2c; підписано п'ять найбільших промахів"
+E = test.assign(pred=pred[B]); E["err"] = E.mpg - E.pred; E["abs"] = E.err.abs()
+fig, ax = plt.subplots(figsize=(6.8, 5.2))
+for o, q in E.groupby("origin"): ax.scatter(q.pred, q.mpg, s=26, alpha=.7, color=COL[o], label=o)
+ax.plot([9, 45], [9, 45], "k--", lw=1)
+for _, r in E.nlargest(5, "abs").iterrows():
+    ax.annotate(r.car_name, (r.pred, r.mpg), fontsize=8, xytext=(5, 3), textcoords="offset points")
+ax.set(xlabel="Прогноз, mpg", ylabel="Факт, mpg"); ax.legend(title="Регіон"); save(fig, "test_pred")
+```
+
+```{python}
+#| label: tbl-err
+#| tbl-cap: "Похибки на тесті за діапазоном прогнозу й регіоном (похибка = факт − прогноз)"
+def eg(key, name):
+    a = E.groupby(key, observed=True).err.agg(n="size", bias="mean", RMSE=lambda e: np.sqrt((e**2).mean()), MAE=lambda e: e.abs().mean()).reset_index()
+    a.columns = ["Група", "n", "Середня похибка", "RMSE", "MAE"]
+    a["Група"] = name + ": " + a["Група"].astype(str); return a
+eb = pd.concat([eg(pd.cut(E.pred, [0, 18, 26, 60], labels=["<18 mpg", "18–26 mpg", ">26 mpg"]), "прогноз"), eg("origin", "регіон")])
+eb.to_csv(TAB / "test_errors.csv", index=False)
+md(eb)
+```
+
+```{python}
+#| label: tbl-top
+#| tbl-cap: "П'ять найбільших похибок на тесті"
+tp = E.nlargest(5, "abs")[["car_name", "model_year", "origin", "mpg", "pred", "err"]]
+tp.to_csv(TAB / "test_top_errors.csv", index=False)
+md(tp.rename(columns={"car_name": "Авто", "model_year": "Рік (19xx)", "origin": "Регіон", "pred": "Прогноз", "err": "Похибка"}))
+```
+
+**Аналіз помилок.** Найбільші похибки — в економних авто (прогноз понад 26 mpg): їх RMSE більш ніж удвічі вищий, ніж у групі до 18 mpg. Серед п'яти найбільших промахів — дизельний VW Rabbit (тип пального не є предиктором) і Mazda RX-3 з роторним двигуном, які модель не відрізняє від звичайних бензинових авто. Два *vw rabbit* 1980 р. мають дуже різні `mpg` (29,8 і 41,5), а помилки моделі для них протилежні за знаком: наявні ознаки цієї різниці не пояснюють. Європейських та японських авто в тесті лише по 17, тому їхні RMSE неточні.
+
+Тестовий RMSE дещо вищий за CV (`{python} uk(TM[B]['RMSE'])` проти `{python} uk(R[B])`), але CV-оцінка лежить у межах ДІ тесту.
+
+# Обговорення й висновки
+
+**Відповідь на питання.** За масою, потужністю, роком і регіоном `mpg` нової моделі того самого ринку прогнозується з RMSE `{python} uk(TM[B]['RMSE'])` mpg (95 % ДІ `{python} ci(*BS[B].RMSE)`) і MAE `{python} uk(TM[B]['MAE'])` mpg. Це на `{python} uk(gain,0)` % менший RMSE, ніж у константи.
+
+**H1 узгоджується з даними (розвідувально).** У M1 +100 кг пов'язані з `{python} uk(b.w100)` mpg (95 % ДІ `{python} ci(*k.loc['w100'])`), ДІ цілком нижчий за 0. Проте форма зв'язку нелінійна: M2c дає еластичність `{python} uk(g.lw)` (`{python} ci(*h.loc['lw'])`), тому «−1,2 mpg на 100 кг» — лише усереднення, для легких авто різниця більша. Знак узгоджується з Reynolds і Kandlikar.
+
+**H2 узгоджується з даними (розвідувально).** У M1 +1 рік пов'язаний з `{python} uk(b.yr)` mpg (`{python} ci(*k.loc['yr'])`); у M2c це `{python} uk(pct(g.yr),1)` % на рік. Напрям узгоджується з прогресом за Knittel та описом EPA. Рік об'єднує технології, регулювання й ринкові зміни після нафтових криз, тому це не «чистий ефект технологій».
+
+**Потужність.** У M1 її внесок невизначений (ДІ містить 0), а в логарифмічній формі еластичність `{python} uk(g.lhp)` (`{python} ci(*h.loc['lhp'])`) відмінна від нуля: висновок про окремий предиктор залежить від специфікації, а маса й потужність корельовані.
+
+**Якість прогнозу на нових даних.** M2c корисна для групових оцінок, але для окремого економного авто типова похибка (RMSE) становить близько 4 mpg. Перевага над випадковим лісом мала; головний виграш дала правильна форма зв'язку.
+
+**Межі узагальнення.** Лише ринок США 1970–1982; не стосується гібридів, електромобілів і пізніших років. Тест містить `{python} len(test)` авто і не є цілком незалежним від EDA лабораторної №2. Марка та платформа можуть пов'язувати різні назви моделей навіть після поділу за назвою. Частину описок у самих назвах моделей могло бути не виправлено.
+
+**Змішувальні чинники.** Тип пального, трансмісія, аеродинаміка, клас авто та регуляторні вимоги пов'язані і з масою чи роком, і з `mpg`. Дослідження спостережне, тому всі коефіцієнти — умовні асоціації.
+
+**Продовження.** Розмітити тип пального й трансмісію для наявних авто, додати ці ознаки до M2c, навчити її на 1970–1982 рр. і перевірити на зібраних окремо авто 1983–1985 рр. Це буде перевірка на справді нових даних із часовим поділом.
+
+# Відтворюваність {.unnumbered}
+
+```{python}
+#| label: versions
+vers = {"python": platform.python_version(), **{m.__name__: m.__version__ for m in (np, pd, scipy, sklearn, statsmodels, matplotlib)}}
+json.dump({"seed": SEED, "n_train": len(train), "n_test": len(test), "gain_pct": gain, "cv_rmse": R.to_dict(), "versions": vers},
+          open("outputs/summary.json", "w", encoding="utf8"), ensure_ascii=False, indent=2)
+Markdown(", ".join(f"{a} {v}" for a, v in vers.items()))
+```
+
+# Бібліографія {.unnumbered}
+
+::: {#refs}
+:::
