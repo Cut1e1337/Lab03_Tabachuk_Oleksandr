@@ -12,7 +12,7 @@
 | Звіт (він же виконуваний ноутбук) | [report.qmd](report.qmd) | [report.html](report.html) |
 | Презентація Revealjs | [slides.qmd](slides.qmd) | [slides.html](slides.html) |
 
-HTML-файли самодостатні: завантажте й відкрийте в браузері (GitHub показує їх як код).
+Відкрити онлайн: [звіт](https://cut1e1337.github.io/Lab03_Tabachuk_Oleksandr/report.html) · [слайди](https://cut1e1337.github.io/Lab03_Tabachuk_Oleksandr/slides.html). HTML-файли самодостатні, їх можна також завантажити й відкрити локально.
 
 ## Структура
 
