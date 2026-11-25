@@ -1,0 +1,85 @@
+/*-- scss:defaults --*/
+$navy: #1f2a44;
+$accent: #e4572e;
+$teal: #17a398;
+$muted: #6b7385;
+
+$body-bg: #ffffff;
+$body-color: #2b2f3a;
+$link-color: $teal;
+$font-family-sans-serif: "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+$presentation-heading-font: "Segoe UI Semibold", "Segoe UI", "Inter", Roboto, Arial, sans-serif;
+$presentation-heading-color: $navy;
+$presentation-heading-font-weight: 700;
+$presentation-font-size-root: 34px;
+$presentation-h2-font-size: 1.45em;
+
+/*-- scss:rules --*/
+.reveal .slides section:not(#title-slide) > h2 {
+  padding-left: .55em;
+  border-left: .22em solid $accent;
+  margin-bottom: .55em;
+  line-height: 1.15;
+}
+
+/* титульний слайд */
+#title-slide {
+  text-align: left;
+  .title { font-size: 2.1em; color: $navy; line-height: 1.1; margin-bottom: .3em; }
+  .subtitle { color: $accent; font-size: 1em; font-weight: 600; }
+  .quarto-title-authors { justify-content: flex-start; margin-top: 1.4em; }
+  .quarto-title-author-name { color: $muted; font-size: .85em; }
+}
+
+/* таблиці */
+.reveal table {
+  font-size: .8em;
+  border-collapse: collapse;
+  margin: 0 auto;
+  th {
+    background: $navy; color: #fff; font-weight: 600;
+    border: none; padding: .4em .7em;
+  }
+  td { border-bottom: 1px solid #e3e6ee; padding: .32em .7em; }
+  tbody tr:nth-child(even) td { background: #f6f7fb; }
+  tr.hl td { background: rgba($teal, .16) !important; font-weight: 700; color: $navy; }
+}
+
+/* картки з ключовими числами */
+.stats { display: flex; gap: .6em; margin: .4em 0 .6em; }
+.stat {
+  flex: 1; background: #f6f7fb; border-radius: 12px;
+  padding: .45em .6em; border-top: 5px solid $teal;
+  .num { display: block; font-size: 1.6em; font-weight: 700; color: $navy; line-height: 1.1; }
+  .lbl { display: block; font-size: .62em; color: $muted; margin-top: .25em; }
+  &.bad { border-top-color: #b8bfcc; .num { color: $muted; } }
+  &.key { border-top-color: $accent; }
+}
+
+/* виносна думка */
+.takeaway {
+  background: rgba($accent, .08);
+  border-left: 5px solid $accent;
+  border-radius: 6px;
+  padding: .4em .8em;
+  font-size: .8em;
+  margin-top: .5em;
+}
+.small { font-size: .7em; color: $muted; }
+
+.reveal .hyp {
+  background: #f6f7fb; border-radius: 10px; padding: .35em .7em; margin: .3em 0;
+  font-size: .78em; border-left: 5px solid $teal;
+}
+
+.reveal .slide-number { color: $muted; background: transparent; }
+.reveal .progress { color: $accent; }
+.reveal img { border-radius: 6px; }
+
+#title-slide::before {
+  content: ""; display: block; width: 3.2em; height: .22em;
+  background: $accent; border-radius: 2px; margin-bottom: .8em;
+}
+.reveal .column .stats .num { font-size: 1.35em; }
+.reveal .cv table { font-size: .7em; }
+.reveal .cv td { white-space: nowrap; }

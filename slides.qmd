@@ -4,46 +4,64 @@ subtitle: "Лабораторна робота №3. Основи регресі
 author: "Табачук Олександр Ігорович, група КН-42"
 format:
   revealjs:
-    theme: simple
-    slide-number: true
+    theme: [default, slides.scss]
+    slide-number: c/t
+    progress: true
+    transition: fade
     embed-resources: true
     html-math-method: mathml
-    smaller: true
+    width: 1280
+    height: 720
 execute:
   echo: false
 ---
 
 ```{python}
-import json
+import json, html
 import pandas as pd
-from IPython.display import Markdown
+from IPython.display import HTML
 T = "outputs/tables/"
 J = json.load(open("outputs/summary.json", encoding="utf8"))
 def uk(x, d=2): return f"{x:.{d}f}".replace("-", "−").replace(".", ",")
-def md(d, n=2): return Markdown(d.map(lambda v: uk(v, n) if isinstance(v, float) else v).to_markdown(index=False, disable_numparse=True))
+def tbl(d, n=2, hl=None):
+    """HTML-таблиця; рядок із першою клітинкою hl підсвічується."""
+    f = lambda v: uk(v, n) if isinstance(v, float) else html.escape(str(v))
+    head = "".join(f"<th>{html.escape(c)}</th>" for c in d.columns)
+    rows = "".join(f'<tr{" class=hl" if r.iloc[0] == hl else ""}>' + "".join(f"<td>{f(v)}</td>" for v in r) + "</tr>"
+                   for _, r in d.iterrows())
+    return HTML(f"<table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table>")
 tm = pd.read_csv(T + "test_metrics.csv"); c1 = pd.read_csv(T + "coef_M1.csv"); c2 = pd.read_csv(T + "coef_M2c.csv")
+cv = pd.read_csv(T + "cv_summary.csv")
+r = lambda m: uk(tm.set_index("Модель").loc[m, "RMSE"])
 ```
 
 ## Питання та гіпотези
 
-**Питання.** Наскільки точно маса, потужність, рік і регіон прогнозують `mpg` **моделі, якої немає в навчальних даних**?
+Наскільки точно маса, потужність, рік і регіон прогнозують `mpg` **моделі, якої немає в навчальних даних**?
 
-Auto MPG (UCI, CC BY 4.0): 398 авто, США, 1970–1982. Продовження лабораторної №2.
+::: {.hyp}
+**H1.** За інших рівних важчі авто мають менше mpg *(Reynolds & Kandlikar, 2007)*
+:::
 
-- **H1.** За інших рівних важчі авто мають менше mpg (Reynolds & Kandlikar, 2007).
-- **H2.** За інших рівних новіші авто мають більше mpg (Knittel, 2011; EPA).
+::: {.hyp}
+**H2.** За інших рівних новіші авто мають більше mpg *(Knittel, 2011; EPA)*
+:::
 
-Гіпотези підказані й EDA на тому самому наборі, тому висновки **розвідувальні**.
+::: {.small}
+Auto MPG (UCI, CC BY 4.0): 398 авто, ринок США, 1970–1982 — продовження лабораторної №2. Гіпотези підказані й EDA на тих самих даних, тому висновки **розвідувальні**.
+:::
 
 ::: {.notes}
 Це продовження другої лабораторної: ті самі дані й ціль. Одиниця спостереження — модель певного року.
 :::
 
-## EDA: зв'язок із масою сильний, але нелінійний
+## Зв'язок із масою сильний, але нелінійний
 
-![](outputs/figures/eda_weight.png){height=430 fig-align="center"}
+![](outputs/figures/eda_weight.png){height=470 fig-align="center"}
 
-Рішення: перевірити квадрат маси та логарифмічну форму.
+::: {.takeaway}
+**Рішення:** перевірити квадрат маси та логарифмічну форму.
+:::
 
 ::: {.notes}
 Графік побудовано лише на навчальній частині. EDA з ЛР2 охоплювала всі дані — це обмеження незалежності тесту.
@@ -51,77 +69,120 @@ Auto MPG (UCI, CC BY 4.0): 398 авто, США, 1970–1982. Продовжен
 
 ## Як перевіряли, щоб не було витоку
 
-- Поділ 80/20 **за назвою моделі**: `{python} J['n_train']` / `{python} J['n_test']`, seed 42
-- Групова 5-кратна CV × 10 повторів, однакові розбиття для всіх моделей
-- Імпутація, масштабування, поправка Дуана — лише на навчальній частині розбиття
-- Основна метрика **RMSE**; правило вибору записано до тесту
-- Тест відкрито один раз — для обраної моделі та константи
+::: {.stats}
+::: {.stat}
+<span class="num">`{python} J['n_train']` / `{python} J['n_test']`</span><span class="lbl">поділ 80/20 за назвою моделі, seed 42</span>
+:::
+::: {.stat}
+<span class="num">5 × 10</span><span class="lbl">групова CV: 50 однакових розбиттів для всіх моделей</span>
+:::
+::: {.stat .key}
+<span class="num">RMSE</span><span class="lbl">основна метрика, правило вибору — до тесту</span>
+:::
+:::
+
+- Імпутація, масштабування й поправка Дуана — лише на навчальній частині кожного розбиття
+- Тест відкрито **один раз** — для обраної моделі та константи
 
 ## Базова регресія підтримує H1 і H2
 
 ```{python}
-md(c1)
+tbl(c1)
 ```
 
-Ціль — mpg; кластерно-стійкі 95 % ДІ. Для потужності ДІ містить 0.
+::: {.takeaway}
++100 кг ↔ **−1,19 mpg**; +1 рік ↔ **+0,73 mpg**. Для потужності 95 % ДІ містить 0.
+:::
 
-::: {.notes}
-Константа — середнє навчальної частини. Коефіцієнти — умовні асоціації, а не причинні ефекти.
+::: {.small}
+Ціль — mpg; кластерно-стійкі 95 % ДІ. Це умовні асоціації, а не причинні ефекти.
 :::
 
 ## Діагностика: лінійна форма не підходить
 
-![](outputs/figures/diag_M1.png){height=420 fig-align="center"}
+![](outputs/figures/diag_M1.png){height=440 fig-align="center"}
 
+::: {.takeaway}
 Вигин → бракує нелінійності; «віяло» → більший розкид в економних авто.
+:::
 
 ## Log-log має найменшу похибку
 
-::: {style="font-size:0.72em"}
+::: {.cv}
 ```{python}
-md(pd.read_csv(T + "cv_summary.csv"))
+tbl(cv, hl="M2c log-log")
 ```
 :::
 
-CV на навчальній частині, mpg, середнє ± SD за 50 розбиттями. Обрано **M2c**.
+::: {.takeaway}
+Обрано **M2c (log-log)**: на 16 % точніша за лінійну. Ridge не допоміг, ліс — близько, але не краще.
+:::
+
+::: {.small}
+CV на навчальній частині, mpg, середнє ± SD за 50 розбиттями (розбиття перекриваються).
+:::
 
 ::: {.notes}
-Ridge не допоміг: проблема у формі зв'язку. Випадковий ліс близький, але не кращий і менш інтерпретований. Розбиття перекриваються, тому вони не незалежні.
+Ridge не допоміг: проблема у формі зв'язку. Випадковий ліс близький, але не кращий і менш інтерпретований.
 :::
 
 ## Обрана модель: еластичності
 
+::: {.small}
 ln mpg ~ ln маси + ln потужності + рік + регіон
+:::
 
 ```{python}
-md(c2, 3)
+tbl(c2, 3)
 ```
 
-+1 % маси ↔ приблизно `{python} uk(c2.loc[c2['Член']=='ln маси','Оцінка'].iloc[0])` % mpg
+::: {.takeaway}
++1 % маси ↔ **`{python} uk(c2.loc[c2['Член']=='ln маси','Оцінка'].iloc[0])` %** mpg; кожен новіший рік ↔ **+3,2 %** mpg.
+:::
 
 ## Тест: похибка на `{python} uk(J['gain_pct'],0)` % менша за константу
 
 :::: {.columns}
-::: {.column width="52%"}
-![](outputs/figures/test_pred.png)
+::: {.column width="50%"}
+![](outputs/figures/test_pred.png){height=520}
 :::
-::: {.column width="48%"}
+::: {.column width="50%"}
+::: {.stats}
+::: {.stat .bad}
+<span class="num">`{python} r("M0 константа")`</span><span class="lbl">RMSE константи, mpg</span>
+:::
+::: {.stat .key}
+<span class="num">`{python} r("M2c log-log")`</span><span class="lbl">RMSE M2c, mpg (95 % ДІ `{python} tm.loc[1, "RMSE, 95 % ДІ"]`)</span>
+:::
+:::
+
 ```{python}
-md(tm[["Модель", "RMSE", "RMSE, 95 % ДІ", "MAE"]])
+tbl(tm[["Модель", "RMSE", "MAE"]], hl="M2c log-log")
 ```
 
+::: {.takeaway}
 Найбільші промахи — економні авто: дизельний VW Rabbit, роторна Mazda RX-3. Типу пального в ознаках немає.
+:::
 :::
 ::::
 
 ## Висновки та межі
 
-- mpg нової моделі прогнозується з RMSE ≈ `{python} uk(tm.RMSE.iloc[1],1)` mpg; для економних авто — гірше
-- **H1 і H2 узгоджуються з даними** (розвідувально); зв'язок із масою нелінійний
-- Виграш дала форма зв'язку, а не складніший алгоритм
+::: {.stats}
+::: {.stat .key}
+<span class="num">≈ `{python} uk(tm.RMSE.iloc[1],1)` mpg</span><span class="lbl">похибка прогнозу для нової моделі</span>
+:::
+::: {.stat}
+<span class="num">H1 ✓ H2 ✓</span><span class="lbl">узгоджуються з даними (розвідувально)</span>
+:::
+::: {.stat}
+<span class="num">форма</span><span class="lbl">виграш дав правильний вигляд зв'язку, а не складніший алгоритм</span>
+:::
+:::
 
-**Межі:** ринок США 1970–1982; тест не цілком незалежний від ЛР2; немає типу пального й трансмісії; асоціації, не причинність.
+- **Межі:** ринок США 1970–1982; тест не цілком незалежний від ЛР2; немає типу пального й трансмісії; асоціації, не причинність
+- **Далі:** додати ці ознаки й перевірити на авто 1983–1985 рр.
 
-**Далі:** додати ці ознаки та перевірити на авто 1983–1985 рр.
-
+::: {.small}
 Репозиторій: <https://github.com/Cut1e1337/Lab03_Tabachuk_Oleksandr>
+:::
